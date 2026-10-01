@@ -1,0 +1,69 @@
+name: Update guide
+
+on:
+  schedule:
+    # Twice a day; off the hour because GitHub delays jobs scheduled at :00.
+    - cron: '17 9,21 * * *'
+  push:
+    branches: [main]
+    paths:
+      - playlist.m3u
+      - build-channels.mjs
+      - update.mjs
+      - .github/workflows/update-guide.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-guide
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install the iptv-org/epg grabber
+        run: |
+          git clone --depth 1 https://github.com/iptv-org/epg.git epg
+          cd epg
+          npm install --no-audit --no-fund
+
+      - name: Grab guide
+        run: |
+          set -o pipefail
+          node update.mjs playlist.m3u | tee update.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo '### Guide update'
+            echo '```'
+            grep -E 'channel ids:|Pass [0-9]+( done)?:|Wrote .*guide\.xml|returned no programmes|\(exit ' update.log || echo 'no update log'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The guide branch always holds a single commit, so the repository does not
+      # grow by a 44 MB file every run.
+      - name: Publish to the guide branch
+        run: |
+          mkdir publish
+          cp guide.xml guide.xml.gz unmatched.txt no-programmes.txt publish/
+          cd publish
+          git init --quiet -b guide
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git commit --quiet -m "Guide update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" guide
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
